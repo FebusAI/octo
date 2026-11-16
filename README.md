@@ -1,6 +1,12 @@
-# 🐙 Octo (`Orchestrator-Template`)
+<p align="center">
+  <img src="docs/assets/octo-logo.png" alt="Octo Logo" width="160" />
+</p>
 
-**Keep-It-Simple Distributed Multi-Agent GitHub Kanban Orchestrator.**
+<h1 align="center">Octo</h1>
+
+<p align="center">
+  <strong>Keep-It-Simple Distributed Multi-Agent GitHub Kanban Orchestrator</strong>
+</p>
 
 Uses **GitHub Issues, Labels, and Pull Requests** as the Single Source of Truth (SSOT) — zero external databases, zero external dependencies (pure Python 3 stdlib + `gh` CLI).
 
