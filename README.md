@@ -75,16 +75,16 @@ Uses **GitHub Issues, Labels, and Pull Requests** as the Single Source of Truth 
 ```bash
 # 1. Prerequisites: Python 3.10+, git, GitHub CLI (`gh auth login`), and at least one coding CLI (e.g. claude, pi, aider)
 
-# 2. Bootstrap GitHub Kanban labels & Swarm Board issue
+# 2. Bootstrap folders (`docs/inputs/`, `docs/plans/`, `agents/`), GitHub Kanban labels & Swarm Board
 ./bin/octo init
 
 # 3. Inspect configured agents, models, and pipeline
 ./bin/octo agents
 
-# 4. Phase 1: Orchestrate planning agents -> creates Master Epic in `status:awaiting-approval`
+# 4. (Optional) Drop project requirement docs in `docs/inputs/` and run multi-agent planning
 ./bin/octo plan "Add JWT authentication middleware with tests"
-# Or override model / agent / refinement rounds:
-./bin/octo plan "Add JWT auth" --model opus --rounds 3
+# Or pass explicit docs, model, or refinement rounds:
+./bin/octo plan "Add JWT auth" --docs docs/inputs/spec.md --model opus --rounds 3
 
 # 5. Phase 2: Approve Epic #1 -> spawns [E1-T1], [E1-T2]... with label `epic:1`
 ./bin/octo approve 1

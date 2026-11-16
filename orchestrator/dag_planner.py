@@ -38,14 +38,83 @@ class DAGPlanner:
         self.detector = OverlapDetector(self.repo_root)
         self.last_planning_trace: List[Dict[str, str]] = []
 
-    def _build_architect_prompt(self, goal: str, context_brief: str) -> str:
+    def load_input_documents(self, doc_paths: Optional[List[str]] = None) -> str:
+        """
+        Collects project specification documents from explicit `--docs` paths and/or
+        the configured `project.inputs_dir` (default `docs/inputs/`).
+        """
+        inputs_dir_name = self.config.get("project", {}).get("inputs_dir", "docs/inputs")
+        inputs_dir = self.repo_root / inputs_dir_name
+        candidates: List[Path] = []
+        seen: set[Path] = set()
+
+        def _add_path(p: Path) -> None:
+            resolved = p.resolve()
+            if resolved in seen or not resolved.exists():
+                return
+            if resolved.is_dir():
+                for child in sorted(resolved.rglob("*")):
+                    if child.is_file() and not child.name.startswith("."):
+                        _add_path(child)
+            elif resolved.is_file() and not resolved.name.startswith("."):
+                seen.add(resolved)
+                candidates.append(resolved)
+
+        if doc_paths:
+            for raw in doc_paths:
+                p = Path(raw)
+                if not p.is_absolute():
+                    p = self.repo_root / p
+                _add_path(p)
+        elif inputs_dir.exists():
+            _add_path(inputs_dir)
+
+        if not candidates:
+            return ""
+
+        text_exts = {
+            ".md", ".txt", ".rst", ".json", ".yaml", ".yml",
+            ".csv", ".toml", ".ini", ".py", ".ts", ".tsx", ".js", ".sql",
+        }
+        sections: List[str] = []
+        total_chars = 0
+        max_total = 24000
+
+        for path in candidates:
+            try:
+                rel = str(path.relative_to(self.repo_root))
+            except ValueError:
+                rel = str(path)
+
+            if path.suffix.lower() in text_exts or path.suffix == "":
+                try:
+                    content = path.read_text(encoding="utf-8", errors="replace").strip()
+                except Exception as exc:
+                    sections.append(f"### Document: `{rel}`\n*(Unreadable: {exc})*")
+                    continue
+                snippet = content[:6000]
+                if len(content) > 6000:
+                    snippet += "\n... [truncated]"
+                if total_chars + len(snippet) > max_total:
+                    sections.append(f"### Document: `{rel}`\n*(Available in repo at `{rel}`; omitted due to context budget)*")
+                    continue
+                total_chars += len(snippet)
+                sections.append(f"### Document: `{rel}`\n```markdown\n{snippet}\n```")
+            else:
+                size_kb = max(1, path.stat().st_size // 1024)
+                sections.append(f"### Binary/Asset Document: `{rel}` ({size_kb} KB)\n*(Inspect or parse at `{rel}` if supported by agent tools)*")
+
+        return "\n\n".join(sections)
+
+    def _build_architect_prompt(self, goal: str, context_brief: str, docs_context: str = "") -> str:
         ctx_section = f"## Codebase Context Brief (from Explorer Agent)\n{context_brief.strip()}\n\n" if context_brief.strip() else ""
+        docs_section = f"## Project Input Documents (`docs/inputs/`)\n{docs_context.strip()}\n\n" if docs_context.strip() else ""
         return f"""Design a thorough, modular, production-grade Architecture RFC and Task DAG for the following Goal.
 
 GOAL:
 {goal}
 
-{ctx_section}Your output MUST include ALL of the following sections:
+{docs_section}{ctx_section}Your output MUST include ALL of the following sections:
 1. **Executive Summary & Problem Statement**
 2. **Explicit Goals (`G1`, `G2`, ...) & Non-Goals (`NG1`, `NG2`, ...)**
 3. **Architectural Design & Module Boundaries** (components, data flow, error handling, safety/security considerations)
@@ -128,12 +197,14 @@ Produce the complete, updated RFC (Summary, Goals/Non-Goals, Architecture, Verif
         model_override: Optional[str] = None,
         rounds: Optional[int] = None,
         skip_explore: bool = False,
+        doc_paths: Optional[List[str]] = None,
     ) -> Tuple[str, List[TaskSpec]]:
         """
         Orchestrates the multi-agent planning loop:
-          1. Explorer Agent inspects repo -> Codebase Context Brief
-          2. Architect Agent sets Goals/Non-Goals + Architecture + Task DAG
-          3. Critic <-> Architect refinement loop (`rounds - 1` max critique passes)
+          1. Loads project input documents (`--docs` or `docs/inputs/`)
+          2. Explorer Agent inspects repo -> Codebase Context Brief
+          3. Architect Agent sets Goals/Non-Goals + Architecture + Task DAG
+          4. Critic <-> Architect refinement loop (`rounds - 1` max critique passes)
         """
         planning_cfg = self.config.get("planning", {})
         total_rounds = int(rounds if rounds is not None else planning_cfg.get("rounds", 2))
@@ -141,12 +212,14 @@ Produce the complete, updated RFC (Summary, Goals/Non-Goals, Architecture, Verif
 
         trace: List[Dict[str, str]] = []
         context_brief = ""
+        docs_context = self.load_input_documents(doc_paths=doc_paths)
 
         # Step 1: Codebase Exploration
         if not skip_explore and explorer_profile:
+            docs_hint = f"\n\n## Project Input Documents\n{docs_context}\n" if docs_context else ""
             explore_prompt = (
                 f"Inspect the current repository in read-only mode to gather grounding context for this Goal:\n\n"
-                f"GOAL: {goal}\n\n"
+                f"GOAL: {goal}{docs_hint}\n\n"
                 f"Report repository structure, relevant modules/symbols, test framework & exact test command, "
                 f"conventions, and potential touchpoints/risks."
             )
@@ -174,7 +247,7 @@ Produce the complete, updated RFC (Summary, Goals/Non-Goals, Architecture, Verif
                 })
 
         # Step 2: Initial Goal-Setting & Architecture Draft
-        arch_prompt = self._build_architect_prompt(goal, context_brief)
+        arch_prompt = self._build_architect_prompt(goal, context_brief, docs_context=docs_context)
         arch_res = self.runner.run(
             profile_name=profile,
             prompt=arch_prompt,

@@ -28,18 +28,75 @@ from orchestrator.c2c_coordinator import C2CCoordinator
 
 
 def build_context(args: argparse.Namespace):
-    root = find_repo_root()
+    workdir = getattr(args, "workdir", None)
+    start = Path(workdir).resolve() if workdir else Path.cwd()
+    root = find_repo_root(start)
     config = load_config(root)
+    if not config:
+        config = load_config(REPO_ROOT)
     mock_dir = Path(args.mock_dir) if getattr(args, "mock_dir", None) else None
-    bus = GitHubBus(repo=getattr(args, "repo", None), config=config, mock_dir=mock_dir)
+    bus = GitHubBus(repo=getattr(args, "repo", None), config=config, mock_dir=mock_dir, cwd=root)
     runner = HarnessRunner(config=config, repo_root=root)
     return root, config, bus, runner
 
 
+def _scaffold_repo(root: Path) -> list[str]:
+    """Creates starter Octo folders & files in `root` without overwriting existing ones."""
+    import shutil
+
+    scaffolded = []
+    for rel in ("docs/inputs", "docs/plans", ".swarm", "agents"):
+        d = root / rel
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            scaffolded.append(f"{rel}/")
+        keep = d / ".gitkeep"
+        if rel in ("docs/inputs", "docs/plans", ".swarm") and not any(d.iterdir()):
+            keep.touch()
+
+    if not (root / "orchestrator.yaml").exists() and (REPO_ROOT / "orchestrator.yaml").exists():
+        shutil.copy2(REPO_ROOT / "orchestrator.yaml", root / "orchestrator.yaml")
+        scaffolded.append("orchestrator.yaml")
+
+    template_agents = REPO_ROOT / "agents"
+    if template_agents.exists():
+        for src in sorted(template_agents.glob("*.md")):
+            dst = root / "agents" / src.name
+            if not dst.exists():
+                shutil.copy2(src, dst)
+                scaffolded.append(f"agents/{src.name}")
+
+    gitignore_path = root / ".gitignore"
+    required_entries = [
+        ".worktrees/",
+        ".octo-sessions/",
+        "orchestrator.local.yaml",
+        "agents/*.local.md",
+        ".swarm/*",
+        "!.swarm/.gitkeep",
+    ]
+    existing_gi = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+    missing_gi = [e for e in required_entries if e not in existing_gi]
+    if missing_gi:
+        block = ("\n" if existing_gi and not existing_gi.endswith("\n") else "") + "# Octo runtime & local overrides\n" + "\n".join(missing_gi) + "\n"
+        gitignore_path.write_text(existing_gi + block, encoding="utf-8")
+        scaffolded.append(".gitignore (Octo rules)")
+
+    return scaffolded
+
+
 def cmd_init(args: argparse.Namespace) -> int:
+    workdir = getattr(args, "workdir", None)
+    target_dir = Path(workdir).resolve() if workdir else find_repo_root()
+    scaffolded = _scaffold_repo(target_dir)
+    if scaffolded:
+        print(f"📁 Scaffolded Octo workspace in `{target_dir}`:")
+        for item in scaffolded:
+            print(f"   • {item}")
+
     root, _, bus, _ = build_context(args)
     created = bus.bootstrap_labels()
-    print(f"✅ Bootstrapped {len(created)} Kanban labels on GitHub:")
+    print(f"✅ Bootstrapped {len(created)} Kanban labels on GitHub ({bus.repo or root.name}):")
     for lbl in created:
         print(f"   • {lbl}")
     board = SwarmBoard(repo_root=root, bus=bus)
@@ -184,6 +241,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             model_override=args.model,
             rounds=rounds,
             skip_explore=args.no_explore,
+            doc_paths=args.docs,
         )
         trace = planner.last_planning_trace
 
@@ -467,6 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="octo",
         description="Distributed Multi-Agent GitHub Kanban & Multi-Harness Orchestrator",
     )
+    p.add_argument("-C", "--workdir", help="Target repository directory (defaults to current working directory).")
     p.add_argument("-R", "--repo", help="GitHub repository (OWNER/REPO). Defaults to current git remote.")
     p.add_argument("--mock-dir", help="Local directory for offline/mock GitHub simulation.")
 
@@ -494,6 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub_plan.add_argument("--model", help="Override model for the planning agents (e.g. opus, sonnet, qwen2.5-coder)")
     sub_plan.add_argument("--rounds", type=int, default=None, help="Planning refinement rounds (1=fast, 2+=Architect<->Critic loop)")
     sub_plan.add_argument("--no-explore", action="store_true", help="Skip the Explorer codebase discovery step")
+    sub_plan.add_argument("--docs", nargs="*", help="Input document paths (defaults to all files in docs/inputs/)")
     sub_plan.add_argument("--from-file", help="Load pre-written Markdown/JSON plan file instead of invoking agents")
     sub_plan.set_defaults(func=cmd_plan)
 

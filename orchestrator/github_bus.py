@@ -32,11 +32,18 @@ class GitHubBus:
         repo: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         mock_dir: Optional[Path] = None,
+        cwd: Optional[Path] = None,
     ):
+        self.cwd = cwd
         self.repo = repo or os.environ.get("OCTO_REPO")
         if not self.repo:
             try:
-                proc = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], capture_output=True, text=True)
+                proc = subprocess.run(
+                    ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+                    cwd=str(self.cwd) if self.cwd else None,
+                    capture_output=True,
+                    text=True,
+                )
                 if proc.returncode == 0 and proc.stdout.strip():
                     self.repo = proc.stdout.strip()
             except Exception:
@@ -81,6 +88,7 @@ class GitHubBus:
 
         proc = subprocess.run(
             cmd,
+            cwd=str(self.cwd) if self.cwd else None,
             input=input_text,
             text=True,
             capture_output=True,

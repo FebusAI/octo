@@ -385,6 +385,20 @@ class TestOrchestratorFramework(unittest.TestCase):
         self.assertNotIn(spawned_2["T2"], reconciled["unblocked_tasks"])
         self.assertIn("status:blocked", [l["name"] for l in self.bus.get_issue(spawned_2["T2"])["labels"]])
 
+    def test_09_input_documents_loaded_into_planning(self):
+        """Verifies docs in `docs/inputs/` and explicit `doc_paths` are injected into Architect prompt."""
+        inputs_dir = self.tmp_dir / "docs" / "inputs"
+        inputs_dir.mkdir(parents=True, exist_ok=True)
+        (inputs_dir / "spec.md").write_text("# API Spec\nMust expose /healthz endpoint.", encoding="utf-8")
+
+        docs_ctx = self.planner.load_input_documents()
+        self.assertIn("docs/inputs/spec.md", docs_ctx)
+        self.assertIn("/healthz", docs_ctx)
+
+        prompt = self.planner._build_architect_prompt("Build API", "Context", docs_context=docs_ctx)
+        self.assertIn("Project Input Documents", prompt)
+        self.assertIn("/healthz", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

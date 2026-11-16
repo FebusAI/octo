@@ -3,6 +3,7 @@ project:
   name: "my-project"
   default_branch: "main"
   worktree_dir: ".worktrees"
+  inputs_dir: "docs/inputs"
   plans_dir: "docs/plans"
   require_human_approval_for_plan: true
   auto_merge_on_qa_pass: true
