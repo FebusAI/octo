@@ -1,0 +1,27 @@
+name: "🏛️ Epic / Architecture Goal"
+description: "Create a high-level Goal for the Orchestrator Agent to decompose into a Kanban DAG"
+title: "[EPIC] "
+labels: ["type:epic", "status:planning"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: "🎯 High-Level Goal & Business Objective"
+      description: "Describe what you want the multi-agent swarm to design, build, and verify."
+      placeholder: "Build a modular authentication microservice with JWT rotation and automated unit test suite..."
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: "🛡️ Architectural & Engineering Constraints"
+      description: "Specify language, framework, performance, or security rules."
+      placeholder: "- Python 3.12+ zero external dependencies\n- Must pass automated test suite and code review"
+  - type: dropdown
+    id: approval_gate
+    attributes:
+      label: "⏸️ Human-in-the-Loop Gate"
+      options:
+        - "Pause at status:awaiting-approval after generating the DAG (Recommended)"
+        - "Auto-approve and immediately unlock status:ready tasks"
+      default: 0

@@ -1,0 +1,31 @@
+name: "🔨 Atomic Agent Task"
+description: "Create an atomic implementation or QA task for Worker Nodes"
+title: "[E1-T1] "
+labels: ["type:task", "status:ready"]
+body:
+  - type: input
+    id: depends_on
+    attributes:
+      label: "🔗 Upstream Dependencies (Depends-On)"
+      description: "Comma-separated issue numbers (e.g. #12, #15) or leave empty if ready immediately."
+      placeholder: "#12, #15"
+  - type: textarea
+    id: objective
+    attributes:
+      label: "🎯 Task Specification (Zero-Context-Loss)"
+      description: "Detailed instructions so any Worker PC can implement this without losing the thread."
+    validations:
+      required: true
+  - type: textarea
+    id: target_files
+    attributes:
+      label: "📂 Target Files"
+      placeholder: "- src/module.py\n- tests/test_module.py"
+  - type: input
+    id: verification_cmd
+    attributes:
+      label: "🧪 Mandatory Verification Command"
+      description: "Command that the Worker and QA Agent must execute to verify completion."
+      value: "pytest"
+    validations:
+      required: true

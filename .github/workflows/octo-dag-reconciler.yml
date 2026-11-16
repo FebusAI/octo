@@ -1,0 +1,54 @@
+name: "🧠 Octo DAG Reconciler & Lease Reaper"
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [closed, labeled]
+  schedule:
+    # Every 15 minutes, reap any expired leases from offline PCs and unblock dependent tasks
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  reconcile-kanban-dag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reconcile DAG, Handle /approve Gate & Reap Expired Leases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OCTO_REPO: ${{ github.repository }}
+        run: |
+          python3 -c '
+          from pathlib import Path
+          from orchestrator.config import load_yaml_file
+          from orchestrator.github_bus import GitHubBus
+          from orchestrator.harness_runner import HarnessRunner
+          from orchestrator.dag_planner import DAGPlanner
+          from orchestrator.worker_daemon import WorkerDaemon
+
+          root = Path(".")
+          cfg = load_yaml_file(root / "orchestrator.yaml")
+          bus = GitHubBus(config=cfg)
+          runner = HarnessRunner(config=cfg, repo_root=root)
+          worker = WorkerDaemon(bus=bus, runner=runner, repo_root=root, config=cfg, node_id="gh-actions-reaper")
+          planner = DAGPlanner(bus=bus, runner=runner, repo_root=root, config=cfg)
+
+          reaped = worker.reap_stale_in_progress_issues()
+          print("Reaped stale issues:", reaped)
+          rec = planner.reconcile_dag_and_unblock()
+          print("DAG Reconcile summary:", rec)
+          '

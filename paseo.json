@@ -1,0 +1,28 @@
+{
+  "worktree": {
+    "setup": "./bin/octo init"
+  },
+  "scripts": {
+    "Kanban Status": {
+      "command": "./bin/octo status"
+    },
+    "Configured Agents": {
+      "command": "./bin/octo agents"
+    },
+    "Run Worker (1 Task)": {
+      "command": "./bin/octo worker --once"
+    },
+    "Run Worker Loop": {
+      "command": "./bin/octo worker --loop"
+    },
+    "QA Gate + Unblock DAG": {
+      "command": "./bin/octo orchestrate --once"
+    },
+    "Cluster Nodes (SSH Probe)": {
+      "command": "./bin/octo node list --probe"
+    },
+    "Run Tests": {
+      "command": "python3 -m unittest discover -s tests -v"
+    }
+  }
+}

@@ -1,0 +1,54 @@
+name: "🛡️ Octo Automated QA & Verification Gate"
+
+on:
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  qa-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR Branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Static Safety & Secret Scan
+        run: |
+          python3 -c '
+          import subprocess, sys
+          from pathlib import Path
+          from orchestrator.config import load_yaml_file
+          from orchestrator.github_bus import GitHubBus
+          from orchestrator.harness_runner import HarnessRunner
+          from orchestrator.qa_auditor import QAAuditor
+
+          root = Path(".")
+          cfg = load_yaml_file(root / "orchestrator.yaml")
+          bus = GitHubBus(config=cfg, mock_dir=root / ".tmp-ci-mock")
+          runner = HarnessRunner(config=cfg, repo_root=root)
+          auditor = QAAuditor(bus=bus, runner=runner, repo_root=root, config=cfg, node_id="gh-actions-qa")
+
+          diff = subprocess.run(["git", "diff", "origin/${{ github.base_ref }}...HEAD"], capture_output=True, text=True).stdout
+          violations = auditor.scan_code_safety(diff)
+          if violations:
+              print("❌ Safety Violations Found:")
+              for v in violations:
+                  print(" -", v)
+              sys.exit(1)
+          print("✅ Static Safety & Secret Scan Passed!")
+          '
+
+      - name: Run Framework Self-Test Suite
+        run: |
+          python3 -m unittest discover -s tests -v

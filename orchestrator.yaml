@@ -1,0 +1,184 @@
+version: "1.0"
+project:
+  name: "my-project"
+  default_branch: "main"
+  worktree_dir: ".worktrees"
+  plans_dir: "docs/plans"
+  require_human_approval_for_plan: true
+  auto_merge_on_qa_pass: true
+  squash_merge: true
+
+# Multi-Agent Planning & Execution Pipeline
+# Octo only orchestrates; models, harnesses, and system prompts live in `agents/*.md`.
+# Tip: Put private LAN IPs, SSH hosts, or custom model overrides in `orchestrator.local.yaml` (gitignored).
+planning:
+  rounds: 2   # 1 = fast single-pass; 2+ = Explorer -> Architect -> Critic <-> Architect refinement loop
+  agents:
+    explorer: "planner-explorer"
+    architect: "planner-architect"
+    critic: "planner-critic"
+
+execution:
+  worker_agent: "worker"
+  qa_agent: "qa"
+
+# GitHub Native Kanban State Machine (Labels)
+kanban:
+  project_title: "Agent Swarm Kanban"
+  states:
+    planning:
+      label: "status:planning"
+      color: "D4C5F9"
+      description: "Orchestrator is designing architecture & decomposing tasks"
+    awaiting_approval:
+      label: "status:awaiting-approval"
+      color: "FBCA04"
+      description: "Plan is ready; waiting for human approval (/approve) before coding"
+    blocked:
+      label: "status:blocked"
+      color: "B60205"
+      description: "Waiting on upstream dependency issues (Depends-On) to complete"
+    ready:
+      label: "status:ready"
+      color: "0E8A16"
+      description: "Unlocked and ready for any available Worker Node to claim"
+    in_progress:
+      label: "status:in-progress"
+      color: "1D76DB"
+      description: "Actively claimed and being worked on by a Worker Node"
+    needs_clarification:
+      label: "status:needs-clarification"
+      color: "F9D0C4"
+      description: "Worker asked a question (@orchestrator); waiting for clarification"
+    in_review:
+      label: "status:in-review"
+      color: "5319E7"
+      description: "PR opened; waiting for Automated QA Review"
+    rework:
+      label: "status:rework"
+      color: "E99695"
+      description: "QA review requested changes; ready for worker remediation"
+    done:
+      label: "status:done"
+      color: "006B75"
+      description: "Verified, approved, and merged into main"
+
+  roles:
+    epic:
+      label: "type:epic"
+      color: "3E4B9E"
+      description: "Master Epic / Goal tracking issue containing the architecture RFC & DAG"
+    task:
+      label: "type:task"
+      color: "C2E0C6"
+      description: "Atomic implementation unit derived from an Epic"
+    qa:
+      label: "type:qa"
+      color: "BFD4F2"
+      description: "Dedicated QA or test verification task derived from an Epic"
+    bug:
+      label: "type:bug"
+      color: "D73A4A"
+      description: "Defect or regression discovered during QA"
+    swarm_board:
+      label: "type:swarm-board"
+      color: "D4C5F9"
+      description: "Dedicated GitHub Issue hosting the live Swarm & Multiplayer Message Board"
+
+# Lease & Fault-Tolerance Settings for Distributed Workers
+lease:
+  ttl_seconds: 900             # 15 minutes lease before a silent node is considered stale
+  heartbeat_interval: 240      # Worker posts/updates heartbeat every 4 minutes
+  claim_optimistic_wait: 3.0   # Seconds to wait after posting [AGENT-CLAIM] to resolve race conditions
+  wip_branch_prefix: "wip/issue-"
+  feat_branch_prefix: "feat/issue-"
+
+# Swarm (Intra-Task) & Multiplayer (Cross-Task/Cross-Node) Configuration
+swarm:
+  enabled: true
+  board_dir: ".swarm"
+  auto_post_to_github: true
+  channels:
+    - name: "main"
+      topic: "Default intra-swarm broadcast channel"
+    - name: "c2c"
+      topic: "Coordinator-to-Coordinator cross-assignment negotiation"
+    - name: "qa"
+      topic: "Verifier & QA handoffs"
+
+multiplayer:
+  enabled: true
+  overlap_detection:
+    auto_check_on_claim: true
+    block_on_critical_collision: true
+    alert_on_interface_dependency: true
+  c2c:
+    auto_negotiate: true
+    broadcast_channel: "c2c"
+  feat_branch_prefix: "feat/issue-"
+
+# Optional Named Harness Profiles (for `--profile` overrides or referencing from `agents/*.md`)
+harnesses:
+  default_planner: "planner-architect"
+  default_worker: "worker"
+  default_qa: "qa"
+
+  profiles:
+    claude-cli:
+      adapter: "claude"
+      model: "sonnet"
+      extra_args: ["--dangerously-skip-permissions"]
+
+    pi-anthropic:
+      adapter: "pi"
+      provider: "anthropic"
+      model: "claude-sonnet-4-6"
+      thinking: "high"
+      extra_args: []
+
+    pi-local:
+      adapter: "pi"
+      provider: "openai"
+      model: "qwen2.5-coder:32b"
+      thinking: "medium"
+      endpoint: "http://localhost:11434/v1"
+      extra_args: []
+
+    aider-local:
+      adapter: "aider"
+      model: "openai/qwen2.5-coder:32b"
+      api_base: "http://localhost:11434/v1"
+      api_key: "local"
+      extra_args: ["--yes-always", "--no-auto-commits"]
+
+    agy-cli:
+      adapter: "agy"
+      extra_args: []
+
+# Cluster Worker Nodes (override or add private SSH hosts in `orchestrator.local.yaml`)
+nodes:
+  localhost:
+    host: "localhost"
+    roles: ["orchestrator", "worker", "qa"]
+    default_profile: "worker"
+    max_parallel_workers: 2
+
+  # Example remote worker node (copy to orchestrator.local.yaml and customize):
+  # gpu-worker-1:
+  #   host: "gpu-worker-1"
+  #   ssh_user: "ubuntu"
+  #   roles: ["worker", "qa"]
+  #   default_profile: "pi-local"
+  #   workdir: "~/workspaces/my-project"
+  #   max_parallel_workers: 2
+
+# Integrated Quality Assurance & Verification Policy
+qa_policy:
+  enforce_independent_reviewer: true
+  require_verification_command: true
+  max_rework_cycles: 3
+  forbidden_patterns:
+    - "rm -rf /"
+    - "DROP DATABASE"
+    - "mkfs"
+    - "dd if="

@@ -1,0 +1,9 @@
+{
+  "id": "paseo-octo-kanban",
+  "name": "Octo Multi-Agent Kanban",
+  "description": "GitHub-native Kanban board, multi-agent DAG planning & approval, worker execution, and automated QA.",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.15.0"
+  }
+}

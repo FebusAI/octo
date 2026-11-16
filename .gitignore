@@ -1,0 +1,22 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+node_modules/
+
+# Isolated Multi-Agent Git Worktrees & Local Sessions
+.worktrees/
+.octo-sessions/
+.tmp-ci-mock/
+.octo-worker-*.log
+
+# Local private overrides & runtime Swarm state
+orchestrator.local.yaml
+agents/*.local.md
+.swarm/*
+!.swarm/.gitkeep
+
+# OS / Editor
+.DS_Store
+.vscode/
+.idea/
