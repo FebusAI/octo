@@ -23,9 +23,12 @@ execution:
   worker_agent: "worker"
   qa_agent: "qa"
 
-# GitHub Native Kanban State Machine (Labels)
+# GitHub Native Kanban State Machine (Labels + GitHub Projects v2)
 kanban:
   project_title: "Agent Swarm Kanban"
+  project_number: null        # Optional: bind to an existing GitHub Project #N (auto-matched by title if null)
+  project_owner: ""           # Optional: GitHub user/org owning the Project (defaults to repo owner)
+  sync_github_project: true   # Sync issue states to GitHub Projects v2 when `project` scope is available
   states:
     planning:
       label: "status:planning"

@@ -49,6 +49,8 @@ class GitHubBus:
             except Exception:
                 pass
         self.config = config or {}
+        self._cached_project: Optional[Dict[str, Any]] = None
+        self._project_scope_missing: bool = False
         self.mock_dir = mock_dir or (
             Path(os.environ["OCTO_MOCK_DIR"]) if os.environ.get("OCTO_MOCK_DIR") else None
         )
@@ -64,7 +66,7 @@ class GitHubBus:
         store_file = self.mock_dir / "github_state.json"
         if not store_file.exists():
             store_file.write_text(
-                json.dumps({"issues": {}, "prs": {}, "labels": {}, "next_id": 1}, indent=2),
+                json.dumps({"issues": {}, "prs": {}, "labels": {}, "projects": {}, "next_id": 1}, indent=2),
                 encoding="utf-8",
             )
 
@@ -145,8 +147,320 @@ class GitHubBus:
         return name
 
     # -------------------------------------------------------------------------
+    # GitHub Projects v2 Integration
+    # -------------------------------------------------------------------------
+    def _project_owner(self, owner: Optional[str] = None) -> str:
+        if owner:
+            return owner
+        cfg_owner = str(self.config.get("kanban", {}).get("project_owner") or "").strip()
+        if cfg_owner:
+            return cfg_owner
+        if self.repo and "/" in self.repo:
+            return self.repo.split("/", 1)[0]
+        return "@me"
+
+    @staticmethod
+    def _is_missing_project_scope_error(err_msg: str) -> bool:
+        low = err_msg.lower()
+        return "read:project" in low or "missing required scopes" in low or "scope" in low and "project" in low
+
+    @staticmethod
+    def _resolve_status_option_id(options_by_name: Dict[str, str], status_label: str) -> Optional[Tuple[str, str]]:
+        """Maps an Octo `status:*` label to the best matching GitHub Project Status option `(name, id)`."""
+        if not options_by_name:
+            return None
+        normalized = {k.strip().lower(): (k, v) for k, v in options_by_name.items()}
+        candidates_map = {
+            "status:awaiting-approval": ["awaiting approval", "status:awaiting-approval", "approval", "backlog", "todo"],
+            "status:planning": ["planning", "status:planning", "backlog", "todo"],
+            "status:blocked": ["blocked", "status:blocked", "todo", "backlog"],
+            "status:ready": ["ready", "status:ready", "todo", "backlog"],
+            "status:in-progress": ["in progress", "status:in-progress", "doing", "active"],
+            "status:needs-clarification": ["needs clarification", "status:needs-clarification", "blocked", "in progress"],
+            "status:in-review": ["in review", "status:in-review", "review", "in progress"],
+            "status:rework": ["rework", "status:rework", "in progress", "todo"],
+            "status:done": ["done", "status:done", "completed", "closed"],
+        }
+        for cand in candidates_map.get(status_label, [status_label.replace("status:", "").replace("-", " ")]):
+            if cand in normalized:
+                return normalized[cand]
+        return None
+
+    def list_github_projects(self, owner: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Lists existing GitHub Projects v2 for the repository owner."""
+        if self.mock_dir:
+            store = self._load_mock()
+            return list(store.get("projects", {}).values())
+
+        target_owner = self._project_owner(owner)
+        try:
+            out = self._run_gh(["project", "list", "--owner", target_owner, "--limit", "50", "--format", "json"])
+        except GitHubBusError as exc:
+            if self._is_missing_project_scope_error(str(exc)):
+                self._project_scope_missing = True
+                raise GitHubBusError("Missing GitHub `project` scope. Run: gh auth refresh -s project") from exc
+            raise
+        data = json.loads(out) if out else {}
+        if isinstance(data, dict):
+            return list(data.get("projects", []))
+        return list(data) if isinstance(data, list) else []
+
+    def ensure_github_project(
+        self,
+        title: Optional[str] = None,
+        project_number: Optional[int] = None,
+        owner: Optional[str] = None,
+        link_repo: bool = True,
+        create_if_missing: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Finds an existing GitHub Project v2 (by `project_number` or `project_title`), or creates
+        and links it to `self.repo`, returning metadata including the `Status` field options.
+        """
+        kanban_cfg = self.config.get("kanban", {})
+        target_num = project_number or kanban_cfg.get("project_number")
+        target_title = title or kanban_cfg.get("project_title") or "Agent Swarm Kanban"
+        target_owner = self._project_owner(owner)
+
+        if self.mock_dir:
+            store = self._load_mock()
+            projects = store.setdefault("projects", {})
+            matched = None
+            if target_num is not None and str(target_num) in projects:
+                matched = projects[str(target_num)]
+            else:
+                for p in projects.values():
+                    if str(p.get("title", "")).lower() == str(target_title).lower():
+                        matched = p
+                        break
+            if not matched and create_if_missing:
+                pnum = len(projects) + 1
+                matched = {
+                    "number": pnum,
+                    "id": f"PVT_mock_{pnum}",
+                    "title": target_title,
+                    "owner": target_owner,
+                    "url": f"https://github.com/users/{target_owner}/projects/{pnum}",
+                    "linked_repos": [self.repo] if (link_repo and self.repo) else [],
+                    "status_field_id": "PVTSSF_mock_status",
+                    "status_options": {
+                        "Todo": "opt_todo",
+                        "In Progress": "opt_in_progress",
+                        "In Review": "opt_in_review",
+                        "Done": "opt_done",
+                    },
+                    "items": {},
+                }
+                projects[str(pnum)] = matched
+                self._save_mock(store)
+            self._cached_project = matched
+            return matched
+
+        existing = self.list_github_projects(owner=target_owner)
+        matched_proj: Optional[Dict[str, Any]] = None
+        if target_num is not None:
+            for p in existing:
+                if int(p.get("number", 0)) == int(target_num):
+                    matched_proj = p
+                    break
+        if not matched_proj:
+            for p in existing:
+                if str(p.get("title", "")).strip().lower() == str(target_title).strip().lower():
+                    matched_proj = p
+                    break
+
+        if not matched_proj and create_if_missing:
+            out = self._run_gh(
+                ["project", "create", "--owner", target_owner, "--title", str(target_title), "--format", "json"]
+            )
+            matched_proj = json.loads(out)
+
+        if not matched_proj:
+            return None
+
+        pnum = int(matched_proj["number"])
+        if link_repo and self.repo:
+            self._run_gh(
+                ["project", "link", str(pnum), "--owner", target_owner, "--repo", self.repo],
+                check=False,
+            )
+
+        fields_out = self._run_gh(
+            ["project", "field-list", str(pnum), "--owner", target_owner, "--format", "json"],
+            check=False,
+        )
+        status_field_id = ""
+        status_options: Dict[str, str] = {}
+        if fields_out:
+            fdata = json.loads(fields_out)
+            fields_list = fdata.get("fields", []) if isinstance(fdata, dict) else fdata
+            for fld in fields_list:
+                if str(fld.get("name", "")).lower() == "status":
+                    status_field_id = str(fld.get("id", ""))
+                    for opt in fld.get("options", []):
+                        status_options[str(opt.get("name", ""))] = str(opt.get("id", ""))
+                    break
+
+        resolved = {
+            "number": pnum,
+            "id": str(matched_proj.get("id", "")),
+            "title": str(matched_proj.get("title", target_title)),
+            "url": str(matched_proj.get("url", "")),
+            "owner": target_owner,
+            "status_field_id": status_field_id,
+            "status_options": status_options,
+        }
+        self._cached_project = resolved
+        return resolved
+
+    def _get_project_items_map(self, project_number: int, owner: str) -> Dict[int, str]:
+        """Returns `{issue_number: project_item_id}` for items already on the GitHub Project."""
+        out = self._run_gh(
+            ["project", "item-list", str(project_number), "--owner", owner, "--limit", "200", "--format", "json"],
+            check=False,
+        )
+        if not out:
+            return {}
+        data = json.loads(out)
+        items = data.get("items", []) if isinstance(data, dict) else data
+        mapping: Dict[int, str] = {}
+        for it in items:
+            content = it.get("content") or {}
+            num = content.get("number")
+            repo_name = content.get("repository")
+            if num is not None and (not self.repo or not repo_name or repo_name == self.repo):
+                mapping[int(num)] = str(it.get("id", ""))
+        return mapping
+
+    def sync_issue_to_project(
+        self,
+        issue_number: int,
+        status_label: Optional[str] = None,
+        project_number: Optional[int] = None,
+        issue_url: Optional[str] = None,
+        items_map: Optional[Dict[int, str]] = None,
+    ) -> bool:
+        """Adds an issue to the configured GitHub Project v2 and sets its Status column."""
+        if self._project_scope_missing:
+            return False
+
+        proj = self._cached_project
+        if not proj or (project_number and int(proj.get("number", 0)) != int(project_number)):
+            proj = self.ensure_github_project(project_number=project_number, create_if_missing=False)
+        if not proj:
+            return False
+
+        if not status_label:
+            iss = self.get_issue(issue_number)
+            labels = [l["name"] for l in iss.get("labels", [])]
+            status_label = next((l for l in labels if l.startswith("status:")), "status:ready")
+            if not issue_url:
+                issue_url = iss.get("url")
+
+        if self.mock_dir:
+            store = self._load_mock()
+            p_rec = store.setdefault("projects", {}).get(str(proj["number"]))
+            if not p_rec:
+                return False
+            opt = self._resolve_status_option_id(p_rec.get("status_options", {}), status_label)
+            p_rec.setdefault("items", {})[str(issue_number)] = {
+                "issue_number": issue_number,
+                "status_label": status_label,
+                "project_status": opt[0] if opt else status_label,
+            }
+            self._save_mock(store)
+            return True
+
+        pnum = int(proj["number"])
+        owner = proj["owner"]
+        item_id = items_map.get(issue_number) if items_map is not None else None
+        if not item_id:
+            url = issue_url or (f"https://github.com/{self.repo}/issues/{issue_number}" if self.repo else "")
+            if not url:
+                return False
+            add_out = self._run_gh(
+                ["project", "item-add", str(pnum), "--owner", owner, "--url", url, "--format", "json"],
+                check=False,
+            )
+            if add_out:
+                try:
+                    item_id = str(json.loads(add_out).get("id", ""))
+                except json.JSONDecodeError:
+                    item_id = ""
+            if not item_id:
+                refreshed_map = self._get_project_items_map(pnum, owner)
+                item_id = refreshed_map.get(issue_number, "")
+
+        if not item_id:
+            return False
+
+        field_id = proj.get("status_field_id", "")
+        opt = self._resolve_status_option_id(proj.get("status_options", {}), status_label)
+        if field_id and opt and proj.get("id"):
+            self._run_gh(
+                [
+                    "project",
+                    "item-edit",
+                    "--id",
+                    item_id,
+                    "--project-id",
+                    proj["id"],
+                    "--field-id",
+                    field_id,
+                    "--single-select-option-id",
+                    opt[1],
+                ],
+                check=False,
+            )
+        return True
+
+    def sync_all_issues_to_project(
+        self,
+        project_number: Optional[int] = None,
+        title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Ensures the GitHub Project v2 exists and syncs every repository issue + status onto it."""
+        proj = self.ensure_github_project(title=title, project_number=project_number, create_if_missing=True)
+        if not proj:
+            raise GitHubBusError("Could not locate or create GitHub Project.")
+
+        issues = self.list_issues(state="all", limit=200)
+        items_map = None if self.mock_dir else self._get_project_items_map(int(proj["number"]), proj["owner"])
+        synced = 0
+        for iss in issues:
+            labels = [l["name"] for l in iss.get("labels", [])]
+            status_lbl = next((l for l in labels if l.startswith("status:")), "status:done" if iss.get("state", "").upper() == "CLOSED" else "status:ready")
+            ok = self.sync_issue_to_project(
+                issue_number=int(iss["number"]),
+                status_label=status_lbl,
+                project_number=int(proj["number"]),
+                issue_url=iss.get("url"),
+                items_map=items_map,
+            )
+            if ok:
+                synced += 1
+
+        return {
+            "project_number": int(proj["number"]),
+            "project_title": proj["title"],
+            "project_url": proj.get("url", ""),
+            "synced_count": synced,
+            "total_issues": len(issues),
+        }
+
+    # -------------------------------------------------------------------------
     # Issues & Kanban State Management
     # -------------------------------------------------------------------------
+    def _maybe_sync_project(self, issue_number: int, status_label: str, issue_url: Optional[str] = None) -> None:
+        if not self.config.get("kanban", {}).get("sync_github_project", True):
+            return
+        if self._project_scope_missing:
+            return
+        try:
+            self.sync_issue_to_project(issue_number=issue_number, status_label=status_label, issue_url=issue_url)
+        except Exception:
+            pass
+
     def create_issue(
         self,
         title: str,
@@ -155,6 +469,7 @@ class GitHubBus:
         milestone: Optional[str] = None,
     ) -> int:
         labels = labels or []
+        status_lbl = next((l for l in labels if l.startswith("status:")), "status:ready")
         if self.mock_dir:
             state = self._load_mock()
             issue_num = state["next_id"]
@@ -171,6 +486,7 @@ class GitHubBus:
                 "updatedAt": now_iso,
             }
             self._save_mock(state)
+            self._maybe_sync_project(issue_num, status_lbl)
             return issue_num
 
         args = ["issue", "create", "--title", title, "--body-file", "-"]
@@ -182,7 +498,9 @@ class GitHubBus:
         out = self._run_gh(args, input_text=body)
         # Out ends with .../issues/123
         num_str = out.rstrip("/").split("/")[-1]
-        return int(num_str)
+        issue_num = int(num_str)
+        self._maybe_sync_project(issue_num, status_lbl, issue_url=out if out.startswith("http") else None)
+        return issue_num
 
     def get_issue(self, issue_number: int) -> Dict[str, Any]:
         if self.mock_dir:
@@ -254,12 +572,14 @@ class GitHubBus:
             iss["labels"] = kept
             iss["updatedAt"] = datetime.now(timezone.utc).isoformat()
             self._save_mock(store)
+            self._maybe_sync_project(issue_number, new_status_label)
             return
 
         args = ["issue", "edit", str(issue_number), "--add-label", new_status_label]
         for old_lbl in old_status_labels:
             args.extend(["--remove-label", old_lbl])
         self._run_gh(args)
+        self._maybe_sync_project(issue_number, new_status_label, issue_url=issue.get("url"))
 
     def update_issue_body(self, issue_number: int, new_body: str) -> None:
         if self.mock_dir:

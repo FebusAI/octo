@@ -399,6 +399,27 @@ class TestOrchestratorFramework(unittest.TestCase):
         self.assertIn("Project Input Documents", prompt)
         self.assertIn("/healthz", prompt)
 
+    def test_10_github_projects_v2_sync_and_transitions(self):
+        """Verifies GitHub Projects v2 creation, bulk sync, and automatic status column updates."""
+        tasks = self.planner.parse_tasks_from_markdown(SAMPLE_PLAN_MARKDOWN)
+        epic_num = self.planner.create_epic_for_approval("Projects Sync Epic", SAMPLE_PLAN_MARKDOWN, tasks)
+        spawned = self.planner.approve_and_spawn_dag(epic_num)
+
+        res = self.bus.sync_all_issues_to_project(title="Agent Swarm Kanban")
+        self.assertEqual(res["project_number"], 1)
+        self.assertEqual(res["synced_count"], 3)  # Epic + T1 + T2
+
+        # Transition T1 to in-review -> Project status should map to "In Review"
+        self.bus.transition_issue_state(spawned["T1"], "status:in-review")
+        state = self.bus._load_mock()
+        proj_items = state["projects"]["1"]["items"]
+        self.assertEqual(proj_items[str(spawned["T1"])]["project_status"], "In Review")
+
+        # Close T1 -> Project status should map to "Done"
+        self.bus.close_issue(spawned["T1"])
+        state = self.bus._load_mock()
+        self.assertEqual(state["projects"]["1"]["items"][str(spawned["T1"])]["project_status"], "Done")
+
 
 if __name__ == "__main__":
     unittest.main()
