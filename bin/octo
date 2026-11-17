@@ -16,9 +16,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orchestrator.cluster_ssh import ClusterSSHManager
-from orchestrator.config import find_repo_root, get_node_identity, list_agent_specs, load_config
+from orchestrator.config import find_repo_root, get_node_identity, list_agent_specs, load_config, load_yaml_file
 from orchestrator.dag_planner import DAGPlanner
-from orchestrator.github_bus import GitHubBus
+from orchestrator.github_bus import GitHubBus, GitHubBusError
 from orchestrator.harness_runner import HarnessRunner
 from orchestrator.qa_auditor import QAAuditor
 from orchestrator.worker_daemon import WorkerDaemon
@@ -94,7 +94,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         for item in scaffolded:
             print(f"   • {item}")
 
-    root, _, bus, _ = build_context(args)
+    root, config, bus, _ = build_context(args)
     created = bus.bootstrap_labels()
     print(f"✅ Bootstrapped {len(created)} Kanban labels on GitHub ({bus.repo or root.name}):")
     for lbl in created:
@@ -103,6 +103,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     issue_num = board.get_or_create_github_issue()
     if issue_num:
         print(f"🐝 Initialized GitHub-hosted Swarm Message Board on Issue #{issue_num}")
+    if config.get("kanban", {}).get("sync_github_project", True):
+        try:
+            proj_res = bus.sync_all_issues_to_project()
+            print(
+                f"📊 Synced GitHub Project #{proj_res['project_number']} ({proj_res['project_title']}): "
+                f"{proj_res['synced_count']}/{proj_res['total_issues']} issues"
+            )
+            if proj_res.get("project_url"):
+                print(f"   • {proj_res['project_url']}")
+        except GitHubBusError as exc:
+            print(f"ℹ️  GitHub Projects v2 sync skipped: {exc}")
     return 0
 
 
@@ -520,6 +531,85 @@ def cmd_node(args: argparse.Namespace) -> int:
     return 1
 
 
+def _save_local_project_binding(root: Path, project_number: int, owner: str = "") -> None:
+    local_path = root / "orchestrator.local.yaml"
+    existing = load_yaml_file(local_path)
+    kanban = dict(existing.get("kanban", {}))
+    kanban["project_number"] = int(project_number)
+    kanban["sync_github_project"] = True
+    if owner:
+        kanban["project_owner"] = owner
+    existing["kanban"] = kanban
+    try:
+        import yaml  # type: ignore
+        local_path.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+    except ImportError:
+        local_path.write_text(
+            f"kanban:\n  project_number: {int(project_number)}\n  sync_github_project: true\n"
+            + (f"  project_owner: \"{owner}\"\n" if owner else ""),
+            encoding="utf-8",
+        )
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    root, config, bus, _ = build_context(args)
+    owner = getattr(args, "owner", None)
+
+    try:
+        if args.project_action == "status":
+            projects = bus.list_github_projects(owner=owner)
+            print("=" * 78)
+            print(f"📊 GITHUB PROJECTS v2 (Repo: {bus.repo or root.name})")
+            print("=" * 78)
+            if not projects:
+                print("No GitHub Projects found for this owner.")
+            for p in projects:
+                print(f"  #{p.get('number'):<4} {p.get('title')} -> {p.get('url', '')}")
+            active = bus.ensure_github_project(owner=owner, create_if_missing=False)
+            if active:
+                cols = ", ".join(active.get("status_options", {}).keys()) or "(none)"
+                print(f"\nActive Binding: Project #{active['number']} ({active['title']}) | Columns: [{cols}]")
+            else:
+                print("\nNo Project matched `kanban.project_number` / `kanban.project_title` yet.")
+            print("=" * 78)
+            return 0
+
+        elif args.project_action == "init":
+            res = bus.sync_all_issues_to_project(project_number=args.number, title=args.title)
+            print(
+                f"✅ GitHub Project #{res['project_number']} ({res['project_title']}) ready & synced "
+                f"({res['synced_count']}/{res['total_issues']} issues)"
+            )
+            if res.get("project_url"):
+                print(f"🔗 {res['project_url']}")
+            return 0
+
+        elif args.project_action == "sync":
+            res = bus.sync_all_issues_to_project(project_number=args.number)
+            print(
+                f"🔄 Synced {res['synced_count']}/{res['total_issues']} issues to GitHub Project "
+                f"#{res['project_number']} ({res['project_title']})"
+            )
+            return 0
+
+        elif args.project_action == "link":
+            if not args.number:
+                print("❌ Specify the GitHub Project number: ./bin/octo project link <number>")
+                return 1
+            _save_local_project_binding(root, args.number, owner=owner or "")
+            res = bus.sync_all_issues_to_project(project_number=args.number)
+            print(
+                f"✅ Bound `orchestrator.local.yaml` -> GitHub Project #{res['project_number']} ({res['project_title']}) "
+                f"and synced {res['synced_count']}/{res['total_issues']} issues."
+            )
+            return 0
+    except GitHubBusError as exc:
+        print(f"❌ {exc}")
+        return 1
+
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="octo",
@@ -542,6 +632,14 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     sub_status = sub.add_parser("status", help="Show live GitHub Kanban board and active worker leases")
     sub_status.set_defaults(func=cmd_status)
+
+    # project
+    sub_proj = sub.add_parser("project", help="Inspect, link, and sync GitHub Projects v2 board")
+    sub_proj.add_argument("project_action", choices=["status", "init", "sync", "link"], help="Project action")
+    sub_proj.add_argument("number", nargs="?", type=int, help="GitHub Project number (for link/init/sync)")
+    sub_proj.add_argument("--title", help="Project title when initializing")
+    sub_proj.add_argument("--owner", help="GitHub user/org owning the Project (defaults to repo owner)")
+    sub_proj.set_defaults(func=cmd_project)
 
     # plan
     sub_plan = sub.add_parser("plan", help="Phase 1: Orchestrate planning agents to build an Epic RFC & Task DAG")
