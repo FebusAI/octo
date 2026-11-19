@@ -469,6 +469,12 @@ class GitHubBus:
         milestone: Optional[str] = None,
     ) -> int:
         labels = labels or []
+        if len(body) > 65000:
+            body = (
+                body[:64000]
+                + "\n\n---\n\n\u26a0\ufe0f **Body truncated by Octo (GitHub 65,536-char issue limit).** "
+                + "Full RFC/task spec lives in the `docs/plans/` file linked from this Epic.\n"
+            )
         status_lbl = next((l for l in labels if l.startswith("status:")), "status:ready")
         if self.mock_dir:
             state = self._load_mock()
