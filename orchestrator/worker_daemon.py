@@ -34,6 +34,7 @@ class WorkerDaemon:
         node_id: Optional[str] = None,
         profile_name: str = "worker",
         model_override: Optional[str] = None,
+        assignee: Optional[str] = None,
     ):
         self.bus = bus
         self.runner = runner
@@ -42,6 +43,7 @@ class WorkerDaemon:
         self.node_id = get_node_identity(node_id)
         self.profile_name = profile_name
         self.model_override = model_override
+        self.assignee = assignee or config.get("execution", {}).get("worker_assignee_filter") or None
         self.lease_cfg = config.get("lease", {})
         self.ttl_seconds = int(self.lease_cfg.get("ttl_seconds", 900))
         self.hb_interval = int(self.lease_cfg.get("heartbeat_interval", 240))
@@ -231,8 +233,8 @@ class WorkerDaemon:
         # First reap any stale leases from dead nodes
         self.reap_stale_in_progress_issues()
 
-        candidates = self.bus.list_issues(label="status:rework", state="open") + self.bus.list_issues(
-            label="status:ready", state="open"
+        candidates = self.bus.list_issues(label="status:rework", state="open", assignee=self.assignee) + self.bus.list_issues(
+            label="status:ready", state="open", assignee=self.assignee
         )
         # Filter out Epics
         candidates = [

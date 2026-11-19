@@ -532,6 +532,7 @@ class GitHubBus:
         label: Optional[str] = None,
         state: str = "open",
         limit: int = 100,
+        assignee: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         if self.mock_dir:
             store = self._load_mock()
@@ -542,6 +543,10 @@ class GitHubBus:
                 lbl_names = [l["name"] for l in issue.get("labels", [])]
                 if label and label not in lbl_names:
                     continue
+                if assignee:
+                    logins = [a.get("login", "") for a in issue.get("assignees", []) or []]
+                    if assignee.lower() not in [l.lower() for l in logins]:
+                        continue
                 results.append(issue)
             return sorted(results, key=lambda x: x["number"])
 
@@ -553,8 +558,10 @@ class GitHubBus:
             "--limit",
             str(limit),
             "--json",
-            "number,title,body,state,labels,comments,createdAt,updatedAt,url",
+            "number,title,body,state,labels,comments,assignees,createdAt,updatedAt,url",
         ]
+        if assignee:
+            args.extend(["--assignee", assignee])
         if label:
             args.extend(["--label", label])
         out = self._run_gh(args)

@@ -289,6 +289,7 @@ def cmd_worker(args: argparse.Namespace) -> int:
         node_id=args.node_id,
         profile_name=target,
         model_override=args.model,
+        assignee=getattr(args, "assignee", None),
     )
 
     if args.once:
@@ -666,6 +667,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub_wrk.add_argument("--agent", help="Worker agent name (default: worker)")
     sub_wrk.add_argument("--profile", default="worker", help="Harness profile fallback (e.g. claude-cli, pi-local)")
     sub_wrk.add_argument("--model", help="Override model for this worker run")
+    sub_wrk.add_argument("--assignee", help="Only claim issues assigned to this GitHub login (multi-user safety)")
     sub_wrk.add_argument("--once", action="store_true", help="Claim and process at most one issue then exit")
     sub_wrk.add_argument("--loop", action="store_true", help="Continuously poll for ready issues")
     sub_wrk.add_argument("--poll-interval", type=int, default=15, help="Seconds between polls in loop mode")
