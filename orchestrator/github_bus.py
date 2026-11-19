@@ -845,9 +845,13 @@ class GitHubBus:
             prs = json.loads(existing)
             if prs:
                 pr_num = prs[0]["number"]
+                if len(body) > 65000:
+                    body = body[:64000] + "\n\n---\n\u26a0\ufe0f Body truncated by Octo (GitHub 65,536-char limit).\n"
+                # REST PATCH avoids the deprecated Projects(classic) GraphQL mutation used by `gh pr edit`.
+                payload = json.dumps({"title": title, "body": body})
                 self._run_gh(
-                    ["pr", "edit", str(pr_num), "--title", title, "--body-file", "-"],
-                    input_text=body,
+                    ["api", "-X", "PATCH", f"repos/{self.repo}/pulls/{pr_num}", "--input", "-"],
+                    input_text=payload,
                 )
                 return int(pr_num)
 
