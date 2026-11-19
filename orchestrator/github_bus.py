@@ -805,6 +805,23 @@ class GitHubBus:
     # -------------------------------------------------------------------------
     # Pull Request & QA Review Operations
     # -------------------------------------------------------------------------
+    def find_open_pr_by_branch(self, branch: str) -> Optional[int]:
+        """Return the number of the open PR whose head is `branch`, else None."""
+        if self.mock_dir:
+            store = self._load_mock()
+            for pr in store.get("prs", {}).values():
+                if pr.get("headRefName") == branch and pr.get("state") == "OPEN":
+                    return int(pr["number"])
+            return None
+        out = self._run_gh(
+            ["pr", "list", "--head", branch, "--state", "open", "--json", "number"],
+            check=False,
+        )
+        if not out:
+            return None
+        prs = json.loads(out)
+        return int(prs[0]["number"]) if prs else None
+
     def create_or_update_pr(
         self,
         issue_number: int,

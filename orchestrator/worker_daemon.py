@@ -211,13 +211,27 @@ class WorkerDaemon:
             active_claim = self.bus.get_active_claim(iss)
             if active_claim is None:
                 inum = iss["number"]
+                branch = f"{self.lease_cfg.get('feat_branch_prefix', 'feat/issue-')}{inum}"
+                pr_num = self.bus.find_open_pr_by_branch(branch)
+                if pr_num:
+                    # Work was already submitted (open PR); route to QA instead of re-queueing.
+                    self.bus.transition_issue_state(inum, "status:in-review")
+                    self.bus.post_protocol_message(
+                        inum,
+                        "HANDOVER",
+                        f"⚠️ **Stale Lease Recovered by `{self.node_id}`**: Lease expired, but PR #{pr_num} is open from branch `{branch}`. "
+                        f"Issue routed to `status:in-review` for QA instead of re-queueing.",
+                        {"reaped_by": self.node_id, "status": "submitted", "branch": branch, "pr_number": pr_num},
+                    )
+                    reaped.append(inum)
+                    continue
                 self.bus.transition_issue_state(inum, "status:ready")
                 self.bus.post_protocol_message(
                     inum,
                     "HANDOVER",
                     f"⚠️ **Stale Lease Recovered by `{self.node_id}`**: Previous worker lease expired without heartbeat. "
                     f"Issue returned to `status:ready` so any available node can resume from branch `feat/issue-{inum}`.",
-                    {"reaped_by": self.node_id, "status": "released"},
+                    {"reaped_by": self.node_id, "status": "released", "branch": branch},
                 )
                 reaped.append(inum)
         return reaped

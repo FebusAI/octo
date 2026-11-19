@@ -82,6 +82,9 @@ class QAAuditor:
 
         branch_name = latest_handover.get("branch", f"feat/issue-{issue_number}")
         pr_number = latest_handover.get("pr_number")
+        if not pr_number:
+            # Fallback: discover the open PR by branch (stale-lease reapers may omit pr_number).
+            pr_number = self.bus.find_open_pr_by_branch(branch_name)
         wt_root = self.repo_root / self.config.get("project", {}).get("worktree_dir", ".worktrees")
         wt_dir = wt_root / f"issue-{issue_number}"
         if not wt_dir.exists():
